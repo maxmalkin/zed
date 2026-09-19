@@ -60,12 +60,17 @@ jobs:
           }
           rustup show active-toolchain
       - name: Build portable application
-        run: cargo build --locked --profile release-fast -p zed --bin zed-latex
+        run: |
+          cargo build --locked --profile release-fast -p zed --bin zed-latex
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo build --locked --profile release-fast -p cli --bin cli
+          exit $LASTEXITCODE
       - name: Install Tectonic and prepare package
         run: |
           $ErrorActionPreference = 'Stop'
           New-Item -ItemType Directory -Path portable
           Copy-Item target/release-fast/zed-latex.exe portable/
+          Copy-Item target/release-fast/cli.exe portable/
           Copy-Item target/release-fast/conpty.dll portable/
           Copy-Item target/release-fast/OpenConsole.exe portable/
           New-Item -ItemType Directory -Path portable/x64

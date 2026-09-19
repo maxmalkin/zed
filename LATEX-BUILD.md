@@ -8,7 +8,8 @@ is kept current but needs no changes for rendering.
 
 Run the **Custom Windows Zed** workflow on branch `latex-preview`. Download the
 `Zed-LaTeX-Windows-x64-with-WSL-SSH` artifact, extract the entire archive, and run
-`zed-latex.exe`. Keep `tectonic.exe` and `remote_servers` beside it.
+`zed-latex.exe`. Keep all bundled files together: `cli.exe` also provides the
+SSH password helper, and `tectonic.exe` provides compilation.
 
 This is a portable, unsigned development build. It uses separate `Zed-LaTeX`
 configuration and data directories and does not replace the official install.
