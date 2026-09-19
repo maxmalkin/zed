@@ -243,6 +243,8 @@ pub struct SettingsContent {
 
     /// The settings for the markdown preview.
     pub markdown_preview: Option<MarkdownPreviewSettingsContent>,
+    /// Shared LaTeX preamble for Markdown and Jupyter math rendering.
+    pub latex: Option<LatexSettingsContent>,
 
     pub repl: Option<ReplSettingsContent>,
 
@@ -405,7 +407,7 @@ fallible_options::flattened_deserialize!(SettingsContent {
         call_hierarchy, command_palette, file_finder, git_panel, tabs, tab_bar, status_bar, preview_tabs, agent,
         agent_servers, audio, auto_update, base_keymap, collaboration_panel, debugger, diagnostics,
         git,
-        global_lsp_settings, image_viewer, markdown_preview, repl, helix_mode, hide_mouse,
+        global_lsp_settings, image_viewer, markdown_preview, latex, repl, helix_mode, hide_mouse,
         journal, log, line_indicator_format, language_models, outline_panel, project_panel,
         node, proxy, reduce_motion, server_url, credentials_url, session, telemetry, terminal,
         title_bar, vim_mode, calls, which_key, vim, modeline_lines, feature_flags,
@@ -708,6 +710,16 @@ pub enum DockPosition {
     Left,
     Bottom,
     Right,
+}
+
+/// TeX compilation settings for Markdown and Jupyter equations.
+#[with_fallible_options]
+#[derive(Clone, PartialEq, Default, Serialize, Deserialize, JsonSchema, MergeFrom, Debug)]
+pub struct LatexSettingsContent {
+    /// Package imports and macro definitions inserted before each Markdown/Jupyter equation.
+    pub preamble: Option<String>,
+    /// Absolute directory containing local .sty files used by Markdown/Jupyter equations.
+    pub package_directory: Option<String>,
 }
 
 /// Configuration of voice calls in Zed.

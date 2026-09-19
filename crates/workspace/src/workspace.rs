@@ -8064,17 +8064,12 @@ impl Workspace {
             .on_action(cx.listener(Self::save_all))
             .on_action(cx.listener(Self::send_keystrokes))
             .on_action(cx.listener(Self::add_folder_to_project))
-            .on_action(cx.listener(Self::follow_next_collaborator))
             .on_action(cx.listener(Self::activate_pane_at_index))
             .on_action(cx.listener(Self::move_item_to_pane_at_index))
             .on_action(cx.listener(Self::move_focused_panel_to_next_position))
             .on_action(cx.listener(Self::reopen_last_picker))
             .on_action(cx.listener(Self::toggle_edit_predictions_all_files))
             .on_action(cx.listener(Self::toggle_theme_mode))
-            .on_action(cx.listener(|workspace, _: &Unfollow, window, cx| {
-                let pane = workspace.active_pane().clone();
-                workspace.unfollow_in_pane(&pane, window, cx);
-            }))
             .when(!active_item_is_read_only, |this| {
                 this.on_action(cx.listener(|workspace, action: &Save, window, cx| {
                     workspace
@@ -10016,13 +10011,10 @@ impl Render for Workspace {
 }
 
 impl WorkspaceStore {
-    pub fn new(client: Arc<Client>, cx: &mut Context<Self>) -> Self {
+    pub fn new(client: Arc<Client>, _cx: &mut Context<Self>) -> Self {
         Self {
             workspaces: Default::default(),
-            _subscriptions: vec![
-                client.add_request_handler(cx.weak_entity(), Self::handle_follow),
-                client.add_message_handler(cx.weak_entity(), Self::handle_update_followers),
-            ],
+            _subscriptions: Vec::new(),
             client,
         }
     }

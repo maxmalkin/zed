@@ -593,85 +593,43 @@ impl AutoUpdater {
         true
     }
 
-    // If you are packaging Zed and need to override the place it downloads SSH remotes from,
-    // you can override this function. You should also update get_remote_server_release_url to return
-    // Ok(None).
+    // Fork builds must use a remote server built from the same source revision.
     pub async fn download_remote_server_release(
-        release_channel: ReleaseChannel,
-        version: Option<Version>,
+        _release_channel: ReleaseChannel,
+        _version: Option<Version>,
         os: &str,
         arch: &str,
         set_status: impl Fn(&str, &mut AsyncApp) + Send + 'static,
         cx: &mut AsyncApp,
     ) -> Result<PathBuf> {
-        let this = cx.update(|cx| {
-            cx.default_global::<GlobalAutoUpdate>()
-                .0
-                .clone()
-                .context("auto-update not initialized")
-        })?;
-
-        set_status("Fetching remote server release", cx);
-        let release = Self::get_release_asset(
-            &this,
-            release_channel,
-            version,
-            "zed-remote-server",
-            os,
-            arch,
-            cx,
-        )
-        .await?;
-
-        let servers_dir = paths::remote_servers_dir();
-        let channel_dir = servers_dir.join(release_channel.dev_name());
-        let platform_dir = channel_dir.join(format!("{}-{}", os, arch));
-        let version_path = platform_dir.join(format!("{}.gz", release.version));
-        smol::fs::create_dir_all(&platform_dir).await.ok();
-
-        let client = this.read_with(cx, |this, _| this.client.http_client());
-
-        if smol::fs::metadata(&version_path).await.is_err() {
-            log::info!(
-                "downloading zed-remote-server {os} {arch} version {}",
-                release.version
-            );
-            set_status("Downloading remote server", cx);
-            download_remote_server_binary(&version_path, release, client).await?;
-        }
-
-        if let Err(error) =
-            cleanup_remote_server_cache(&platform_dir, &version_path, REMOTE_SERVER_CACHE_LIMIT)
-                .await
-        {
-            log::warn!(
-                "Failed to clean up remote server cache in {:?}: {error:#}",
-                platform_dir
-            );
-        }
-
-        Ok(version_path)
+        anyhow::ensure!(
+            [os, arch].iter().all(|part| !part.is_empty()
+                && part.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_')),
+            "Invalid remote platform"
+        );
+        let path = std::env::current_exe()?
+            .parent()
+            .context("Application has no parent directory")?
+            .join("remote_servers")
+            .join(format!("{os}-{arch}"))
+            .join("remote_server.gz");
+        anyhow::ensure!(
+            path.is_file(),
+            "Matching remote server missing: {}. Build remote_server from this fork revision for {os}-{arch} and gzip it into this location.",
+            path.display()
+        );
+        set_status("Using bundled remote server", cx);
+        Ok(path)
     }
 
     pub async fn get_remote_server_release_url(
-        channel: ReleaseChannel,
-        version: Option<Version>,
-        os: &str,
-        arch: &str,
-        cx: &mut AsyncApp,
+        _channel: ReleaseChannel,
+        _version: Option<Version>,
+        _os: &str,
+        _arch: &str,
+        _cx: &mut AsyncApp,
     ) -> Result<Option<String>> {
-        let this = cx.update(|cx| {
-            cx.default_global::<GlobalAutoUpdate>()
-                .0
-                .clone()
-                .context("auto-update not initialized")
-        })?;
-
-        let release =
-            Self::get_release_asset(&this, channel, version, "zed-remote-server", os, arch, cx)
-                .await?;
-
-        Ok(Some(release.url))
+        Ok(None)
     }
 
     async fn get_release_asset(

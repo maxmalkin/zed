@@ -64,7 +64,16 @@ use workspace::Workspace;
 use crate::repl_settings::ReplSettings;
 use settings::Settings;
 
-/// When deciding what to render from a collection of mediatypes, we need to rank them in order of importance
+fn latex_markdown(text: &str) -> String {
+    let text = text.trim();
+    let latex = [("$$", "$$"), ("$", "$"), (r"\[", r"\]"), (r"\(", r"\)")]
+        .into_iter()
+        .find_map(|(start, end)| text.strip_prefix(start)?.strip_suffix(end))
+        .unwrap_or(text);
+    format!("$$\n{}\n$$", latex.trim())
+}
+
+/// Prefer the richest supported representation of a kernel output.
 fn rank_mime_type(mimetype: &MimeType) -> usize {
     match mimetype {
         MimeType::DataTable(_) => 7,
@@ -73,6 +82,7 @@ fn rank_mime_type(mimetype: &MimeType) -> usize {
         MimeType::Png(_) => 4,
         MimeType::Jpeg(_) => 3,
         MimeType::Markdown(_) => 2,
+        MimeType::Latex(_) => 8,
         MimeType::Plain(_) => 1,
         // All other media types are not supported in Zed at this time
         _ => 0,
@@ -416,6 +426,10 @@ impl Output {
                     display_id,
                 }
             }
+            Some(MimeType::Latex(text)) => Output::Markdown {
+                content: cx.new(|cx| MarkdownView::from(latex_markdown(text), cx)),
+                display_id,
+            },
             Some(MimeType::Png(data)) | Some(MimeType::Jpeg(data)) => match ImageView::from(data) {
                 Ok(view) => Output::Image {
                     content: cx.new(|_| view),
@@ -883,10 +897,23 @@ mod tests {
     #[test]
     fn test_rank_mime_type_unsupported_returns_zero() {
         let svg = MimeType::Svg(String::new());
-        let latex = MimeType::Latex(String::new());
 
         assert_eq!(rank_mime_type(&svg), 0);
-        assert_eq!(rank_mime_type(&latex), 0);
+    }
+
+    #[test]
+    fn latex_outputs_preserve_math_and_take_precedence_over_fallbacks() {
+        assert!(
+            rank_mime_type(&MimeType::Latex(String::new()))
+                > rank_mime_type(&MimeType::Plain(String::new()))
+        );
+        assert!(
+            rank_mime_type(&MimeType::Latex(String::new()))
+                > rank_mime_type(&MimeType::Html(String::new()))
+        );
+        for source in ["x^2", "$x^2$", "$$x^2$$", r"\[x^2\]", r"\(x^2\)"] {
+            assert_eq!(latex_markdown(source), "$$\nx^2\n$$");
+        }
     }
 
     async fn init_test(

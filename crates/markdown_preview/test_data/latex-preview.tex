@@ -1,0 +1,22 @@
+\documentclass{article}
+\usepackage{amsmath,amssymb}
+\usepackage{previewlocal}
+\begin{document}
+\section{Native LaTeX preview}
+\previewlocalmessage
+Inline math: $E=mc^2$. Display math:
+\[
+\int_0^\infty e^{-x^2}\,dx = \frac{\sqrt{\pi}}{2}.
+\]
+\begin{align}
+ a^2+b^2 &= c^2 \\
+ \sum_{i=1}^n i &= \frac{n(n+1)}{2}
+\end{align}
+\newpage
+\section{Second page}
+Page navigation and zoom should keep this text sharp.
+\[
+\begin{pmatrix}1 & 2 \\ 3 & 4\end{pmatrix}
+\quad \mathbb{R} \subset \mathbb{C}
+\]
+\end{document}

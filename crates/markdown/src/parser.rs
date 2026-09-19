@@ -20,7 +20,8 @@ pub const PARSE_OPTIONS: Options = Options::ENABLE_TABLES
     .union(Options::ENABLE_OLD_FOOTNOTES)
     .union(Options::ENABLE_GFM)
     .union(Options::ENABLE_SUPERSCRIPT)
-    .union(Options::ENABLE_SUBSCRIPT);
+    .union(Options::ENABLE_SUBSCRIPT)
+    .union(Options::ENABLE_MATH);
 
 #[derive(Default)]
 struct ParseState {
@@ -668,7 +669,12 @@ pub(crate) fn parse_markdown_with_options(
             pulldown_cmark::Event::TaskListMarker(checked) => {
                 state.push_event(range, MarkdownEvent::TaskListMarker(checked))
             }
-            pulldown_cmark::Event::InlineMath(_) | pulldown_cmark::Event::DisplayMath(_) => {}
+            pulldown_cmark::Event::InlineMath(content) => {
+                state.push_event(range, MarkdownEvent::InlineMath(content.into_string()));
+            }
+            pulldown_cmark::Event::DisplayMath(content) => {
+                state.push_event(range, MarkdownEvent::DisplayMath(content.into_string()));
+            }
         }
     }
 
@@ -775,6 +781,10 @@ pub enum MarkdownEvent {
     Code,
     /// An inline code node that differs from the markdown source due to escape decoding.
     SubstitutedCode(String),
+    /// LaTeX math, without its delimiters.
+    InlineMath(String),
+    /// A standalone LaTeX equation, without its delimiters.
+    DisplayMath(String),
     /// An HTML node.
     Html,
     /// An inline HTML node.
@@ -982,9 +992,8 @@ mod tests {
     use super::*;
 
     const CONDITIONAL_OPTIONS: Options = Options::ENABLE_YAML_STYLE_METADATA_BLOCKS;
-    const UNWANTED_OPTIONS: Options = Options::ENABLE_MATH
-        .union(Options::ENABLE_DEFINITION_LIST)
-        .union(Options::ENABLE_WIKILINKS);
+    const UNWANTED_OPTIONS: Options =
+        Options::ENABLE_DEFINITION_LIST.union(Options::ENABLE_WIKILINKS);
 
     #[test]
     fn all_options_considered() {
@@ -995,6 +1004,26 @@ mod tests {
                 .union(CONDITIONAL_OPTIONS)
                 .union(UNWANTED_OPTIONS),
             Options::all()
+        );
+    }
+
+    #[test]
+    fn math_preserves_source_ranges_and_excludes_code() {
+        let source = "Inline $x^2$ and $$\\frac{1}{2}$$. `$ignored$`\n\n```tex\n$ignored$\n```";
+        let parsed = parse_markdown_with_options(source, false, false, false);
+        let math = parsed
+            .events
+            .iter()
+            .filter_map(|(range, event)| match event {
+                InlineMath(latex) | DisplayMath(latex) => {
+                    Some((&source[range.clone()], latex.as_str()))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            math,
+            [("$x^2$", "x^2"), ("$$\\frac{1}{2}$$", "\\frac{1}{2}")]
         );
     }
 

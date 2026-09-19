@@ -10,56 +10,10 @@ use serde::{Deserialize, Serialize};
 mod record;
 pub use record::CaptureInput;
 
-#[cfg(any(
-    rust_analyzer,
-    not(any(
-        test,
-        feature = "test-support",
-        all(target_os = "windows", target_env = "gnu"),
-        target_os = "freebsd"
-    ))
-))]
-mod livekit_client;
-#[cfg(any(
-    rust_analyzer,
-    not(any(
-        test,
-        feature = "test-support",
-        all(target_os = "windows", target_env = "gnu"),
-        target_os = "freebsd"
-    ))
-))]
-pub use livekit_client::*;
-
-#[cfg(all(
-    not(rust_analyzer),
-    any(
-        test,
-        feature = "test-support",
-        all(target_os = "windows", target_env = "gnu"),
-        target_os = "freebsd"
-    )
-))]
+// This personal build has no network call transport. Reuse the backend already
+// used on platforms without WebRTC; shared workspace types still depend on it.
 mod mock_client;
-#[cfg(all(
-    not(rust_analyzer),
-    any(
-        test,
-        feature = "test-support",
-        all(target_os = "windows", target_env = "gnu"),
-        target_os = "freebsd"
-    )
-))]
 pub mod test;
-#[cfg(all(
-    not(rust_analyzer),
-    any(
-        test,
-        feature = "test-support",
-        all(target_os = "windows", target_env = "gnu"),
-        target_os = "freebsd"
-    )
-))]
 pub use mock_client::*;
 
 #[derive(Debug, Clone)]

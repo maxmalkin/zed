@@ -24,7 +24,9 @@ base64.workspace = true
 collections.workspace = true
 gpui.workspace = true
 html5ever.workspace = true
+image.workspace = true
 language.workspace = true
+latex_renderer.workspace = true
 linkify.workspace = true
 log.workspace = true
 markup5ever_rcdom.workspace = true
@@ -45,7 +47,6 @@ env_logger.workspace = true
 fs = {workspace = true, features = ["test-support"]}
 gpui = { workspace = true, features = ["test-support"] }
 gpui_platform = { workspace = true, features = ["wayland", "x11"] }
-image.workspace = true
 indoc.workspace = true
 language = { workspace = true, features = ["test-support"] }
 languages = { workspace = true, features = ["load-grammars"] }

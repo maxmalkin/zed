@@ -1,6 +1,7 @@
 use gpui::{App, actions};
 use workspace::Workspace;
 
+mod latex_preview;
 pub mod markdown_preview_settings;
 pub mod markdown_preview_view;
 
@@ -37,6 +38,7 @@ actions!(
 );
 
 pub fn init(cx: &mut App) {
+    latex_preview::init(cx);
     workspace::register_serializable_item::<MarkdownPreviewView>(cx);
 
     cx.observe_new(|workspace: &mut Workspace, window, cx| {

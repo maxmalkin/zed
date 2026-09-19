@@ -1,4 +1,5 @@
 pub mod html;
+mod math;
 mod mermaid;
 pub mod parser;
 mod path_range;
@@ -493,6 +494,7 @@ pub struct Markdown {
     fallback_code_block_language: Option<LanguageName>,
     options: MarkdownOptions,
     mermaid_state: MermaidState,
+    math_state: math::MathState,
     _mermaid_theme_subscription: Option<Subscription>,
     /// Per-diagram view state (current tab, zoom, scroll position, and pending
     /// debounced re-raster) keyed by source offset. Distinct from
@@ -693,6 +695,7 @@ impl Markdown {
             fallback_code_block_language,
             options,
             mermaid_state: MermaidState::default(),
+            math_state: math::MathState::default(),
             _mermaid_theme_subscription: theme_subscription,
             mermaid_views: HashMap::default(),
             copied_code_blocks: HashSet::default(),
@@ -2608,6 +2611,7 @@ impl Element for MarkdownElement {
             0
         };
         let mut code_block_ids = HashSet::default();
+        let mut math_keys = HashSet::default();
 
         let mut current_img_block_range: Option<Range<usize>> = None;
         let mut handled_html_block = false;
@@ -3277,6 +3281,32 @@ impl Element for MarkdownElement {
                     builder.push_text(&format!("[{label}]"), range.clone());
                     builder.pop_text_style();
                 }
+                MarkdownEvent::InlineMath(latex) | MarkdownEvent::DisplayMath(latex) => {
+                    let display = matches!(event, MarkdownEvent::DisplayMath(_));
+                    let style = builder.text_style();
+                    let font_size = style.font_size.to_pixels(window.rem_size()).as_f32();
+                    let key = math::MathKey::new(latex, display, font_size, style.color, cx);
+                    math_keys.insert(key.clone());
+                    let element = self
+                        .markdown
+                        .update(cx, |markdown, cx| markdown.math_state.render(key, cx));
+                    if display {
+                        builder.push_sourced_element(
+                            range.clone(),
+                            div()
+                                .w_full()
+                                .flex()
+                                .justify_center()
+                                .py_2()
+                                .child(element)
+                                .into_any_element(),
+                        );
+                    } else {
+                        builder.flush_text();
+                        let anchor = builder.render_source_anchor(range.clone());
+                        builder.push_image_child(div().relative().child(anchor).child(element));
+                    }
+                }
             }
         }
         if self.style.code_block_overflow_x_scroll {
@@ -3289,6 +3319,9 @@ impl Element for MarkdownElement {
                 .update(cx, |markdown, _| markdown.clear_code_block_scroll_handles());
         }
         let mut rendered_markdown = builder.build();
+        self.markdown.update(cx, |markdown, cx| {
+            markdown.math_state.retain(&math_keys, cx)
+        });
         #[cfg(test)]
         if let Some(on_render) = self.on_render.as_ref() {
             on_render(rendered_markdown.text.clone());
