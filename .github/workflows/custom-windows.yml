@@ -34,10 +34,13 @@ jobs:
           name: remote-linux-x86_64
           path: remote_server.gz
           if-no-files-found: error
+      - name: Clean build files
+        if: always()
+        run: cargo clean --offline
   build:
     if: github.repository == 'maxmalkin/zed'
     runs-on: windows-2025
-    timeout-minutes: 180
+    timeout-minutes: 360
     env:
       ZED_RELEASE_CHANNEL: dev
       ZED_UPDATE_EXPLANATION: 'Update this custom build from maxmalkin/zed Actions artifacts.'
@@ -83,19 +86,20 @@ jobs:
           Copy-Item LATEX-BUILD.md portable/README.md
           Copy-Item LICENSE* portable/
           Copy-Item -Recurse crates/markdown_preview/test_data portable/examples
-      - name: Test math and preview regressions
-        run: |
-          cargo test --locked --profile release-fast -p latex_renderer -- --ignored
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          cargo test --locked --profile release-fast -p markdown --lib math_
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          cargo test --locked --profile release-fast -p repl --lib latex_outputs_
-          exit $LASTEXITCODE
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: Zed-LaTeX-Windows-x64
           path: portable/
           if-no-files-found: error
+      - name: Test math and preview regressions
+        run: |
+          cargo test --locked --profile release-fast -p latex_renderer -- --ignored
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --locked --profile release-fast -p markdown -p repl --lib -- math_ latex_outputs_
+          exit $LASTEXITCODE
+      - name: Clean build files
+        if: always()
+        run: cargo clean --offline
   package:
     needs: [build, remote-server]
     runs-on: ubuntu-22.04
