@@ -95,7 +95,7 @@ jobs:
         run: |
           cargo test --locked --profile release-fast -p latex_renderer -- --ignored
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          cargo test --locked --profile release-fast -p markdown -p repl --lib -- math_ latex_outputs_
+          cargo test --locked --profile release-fast -p markdown -p repl -p open_ai --lib -- math_ latex_outputs_ request_conversion_omits_unsupported_temperature
           exit $LASTEXITCODE
       - name: Clean build files
         if: always()
