@@ -1,0 +1,64 @@
+name: Publish custom Zed
+on:
+  workflow_run:
+    workflows: [Custom Windows Zed]
+    types: [completed]
+    branches: [latex-preview]
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: Successful Custom Windows Zed run to publish
+        required: true
+permissions:
+  contents: write
+  actions: read
+concurrency:
+  group: latex-release
+  cancel-in-progress: false
+jobs:
+  updater-test:
+    if: github.repository == 'maxmalkin/zed' && (github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success')
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+        with:
+          ref: latex-preview
+      - name: Test portable updater
+        shell: powershell
+        run: ./script/latex/test-update.ps1
+  publish:
+    needs: updater-test
+    if: github.repository == 'maxmalkin/zed' && (github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success')
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: maxmalkin/zed
+      RUN_ID: ${{ inputs.run_id || github.event.workflow_run.id }}
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+        with:
+          ref: latex-preview
+      - name: Validate build and publish complete bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$RUN_ID" =~ ^[0-9]+$ ]]
+          gh api "repos/$GH_REPO/actions/runs/$RUN_ID" > run.json
+          jq -e '.conclusion == "success" and .head_branch == "latex-preview" and .head_repository.full_name == "maxmalkin/zed" and .path == ".github/workflows/custom-windows.yml" and (.event == "push" or .event == "workflow_dispatch")' run.json
+          sha=$(jq -r .head_sha run.json)
+          tag="latex-$RUN_ID"
+          if gh release view "$tag" >/dev/null 2>&1; then exit 0; fi
+          # An older completed run must never become the latest update.
+          if gh api "repos/$GH_REPO/releases/latest" > latest.json 2>/dev/null; then
+            old=$(jq -r .tag_name latest.json)
+            status=$(gh api "repos/$GH_REPO/compare/$old...$sha" --jq .status)
+            [[ "$status" == ahead || "$status" == identical ]]
+          fi
+          gh run download "$RUN_ID" --name Zed-LaTeX-Windows-x64-with-WSL-SSH --dir portable
+          test "$(tr -d '\r\n\357\273\277' < portable/BUILD-REVISION.txt)" = "$sha"
+          cp script/latex/update.ps1 portable/Update-Zed-LaTeX.ps1
+          cp LATEX-BUILD.md portable/README.md
+          (cd portable && zip -qr ../Zed-LaTeX-Windows-x64.zip .)
+          sha256sum Zed-LaTeX-Windows-x64.zip > SHA256SUMS
+          printf 'Custom Windows Zed with package-aware LaTeX and SSH/WSL support.\n\nRuntime source: `%s`\n\nValidated build: https://github.com/%s/actions/runs/%s\n\nClose Zed LaTeX before running the bundled Update-Zed-LaTeX.ps1.\n' "$sha" "$GH_REPO" "$RUN_ID" > notes.md
+          gh release create "$tag" Zed-LaTeX-Windows-x64.zip SHA256SUMS --target "$sha" --title "Zed LaTeX ($RUN_ID)" --notes-file notes.md --latest

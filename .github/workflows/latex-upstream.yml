@@ -1,0 +1,48 @@
+name: Sync Zed stable
+on:
+  schedule:
+    - cron: '23 9 * * *'
+  workflow_dispatch:
+permissions:
+  contents: write
+  pull-requests: write
+  actions: write
+concurrency:
+  group: latex-upstream
+  cancel-in-progress: false
+jobs:
+  sync:
+    if: github.repository == 'maxmalkin/zed'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: maxmalkin/zed
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+        with:
+          ref: latex-preview
+          fetch-depth: 0
+      - name: Propose latest stable release
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag=$(gh api repos/zed-industries/zed/releases/latest --jq .tag_name)
+          [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          branch="updates/stable-$tag"
+          git fetch https://github.com/zed-industries/zed.git "refs/tags/$tag"
+          upstream=$(git rev-parse FETCH_HEAD)
+          if git merge-base --is-ancestor "$upstream" HEAD; then exit 0; fi
+          if [[ -n "$(gh pr list --head "$branch" --base latex-preview --state open --json number --jq '.[].number')" ]]; then exit 0; fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git switch -c "$branch"
+          if ! git merge --no-ff "$upstream" -m "Merge Zed $tag into custom distribution"; then
+            echo "### Zed $tag needs manual conflict resolution" >> "$GITHUB_STEP_SUMMARY"
+            git diff --name-only --diff-filter=U >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          git push origin "HEAD:refs/heads/$branch"
+          printf 'Integrates official stable release %s while retaining the custom LaTeX and multiplayer-removal changes.\n\nReview behavior as well as merge conflicts. The native Windows and remote-server build is dispatched on this branch; merge only after it passes.\n' "$tag" > /tmp/update-body.md
+          gh pr create --base latex-preview --head "$branch" --title "Update custom Zed to $tag" --body-file /tmp/update-body.md
+          # GITHUB_TOKEN-created PRs do not trigger other workflows automatically.
+          gh workflow run custom-windows.yml --ref "$branch"

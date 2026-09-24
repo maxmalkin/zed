@@ -13,7 +13,7 @@ SSH password helper, and `tectonic.exe` provides compilation.
 
 This is a portable, unsigned development build. It uses separate `Zed-LaTeX`
 configuration and data directories and does not replace the official install.
-Updates come from new workflow artifacts, not the official updater. Copy any
+Updates come from custom GitHub Releases, not the official updater. Copy any
 wanted settings/extensions into the new profile through Zed's normal UI.
 
 The workflow builds a matching Linux x86_64 remote server for WSL and Linux SSH
@@ -106,3 +106,32 @@ Relevant upstream work: [math rendering PR](https://github.com/zed-industries/ze
 [PDF viewer proposal](https://github.com/zed-industries/zed/pull/51870),
 [extension capabilities](https://zed.dev/docs/extensions/developing-extensions),
 and [Windows build instructions](https://zed.dev/docs/development/windows).
+
+## Keeping the fork current
+
+The **Sync Zed stable** workflow checks daily for the latest official stable
+release. It merges that release into a separate branch, opens a PR against
+`latex-preview`, and dispatches the native build/tests. Review the PR and its
+Actions run before merging. Conflicts stop the workflow and list affected files;
+they are never resolved by discarding the custom changes. The initial fork was
+based on upstream main, so it retains that snapshot's ahead-of-stable changes
+until stable catches up.
+
+Successful builds of `latex-preview` are published by **Publish custom Zed** as
+`latex-<run-id>` releases with a complete Windows/remote-server bundle and SHA-256
+checksum. Candidate update branches are tested but never published. Scheduled
+and workflow-completion triggers require these automation workflows on the
+repository's default branch; the build and custom source stay on `latex-preview`.
+
+Close the custom editor, then run its bundled script from PowerShell:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\Programs\Zed-LaTeX\Update-Zed-LaTeX.ps1"
+```
+
+Add `-CheckOnly` to check without installing. The script uses only this fork's
+latest published release, checks the archive checksum and required files, stages
+it before replacement, and keeps one previous bundle in `Zed-LaTeX.previous`.
+It does not touch official Zed or either application's settings. To roll back,
+close the custom editor and rename the current and previous bundle folders.
+Updates are explicitly run; no background scheduled task is installed.
