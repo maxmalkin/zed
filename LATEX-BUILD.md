@@ -180,5 +180,10 @@ GPU memory. Timings depend on packages, document complexity, and hardware.
 The review also covered Jupyter MIME routing, multiplayer removal, CLI/remote
 bundle selection, and the release updater. Those additions introduce no new
 continuous rendering or polling loops; no speculative rewrite was made there.
-The updated Windows GUI's sustained memory usage still needs measurement after
-its native build completes.
+Native Windows verification of release `latex-35951378235` completed with a
+17-equation Markdown fixture (one inline equation plus 16 display equations).
+Eight preview close/open cycles remained responsive; dedicated GPU allocation
+stabilized at 85,065,728 bytes, and editor private memory ended at 412,856,320
+bytes. These are short GUI smoke-test observations, not a long-running soak.
+Heavier math styling was enabled in this machine's custom profile by appending
+`\boldmath` to the standard package preamble.

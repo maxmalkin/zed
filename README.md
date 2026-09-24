@@ -1,48 +1,85 @@
-# Zed
+# Zed LaTeX
 
-[![Zed](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/zed-industries/zed/main/assets/badge/v0.json)](https://zed.dev)
-[![CI](https://github.com/zed-industries/zed/actions/workflows/run_tests.yml/badge.svg)](https://github.com/zed-industries/zed/actions/workflows/run_tests.yml)
+A personal Windows build of [Zed](https://github.com/zed-industries/zed) with real LaTeX previews, inherited editor settings, and human multiplayer features removed. SSH and WSL development remain available.
 
-Welcome to Zed, a high-performance, multiplayer code editor from the creators of [Atom](https://github.com/atom/atom) and [Tree-sitter](https://github.com/tree-sitter/tree-sitter).
+[Download the latest build](https://github.com/maxmalkin/zed/releases/latest) · [Build status](https://github.com/maxmalkin/zed/actions/workflows/custom-windows.yml?query=branch%3Alatex-preview) · [Detailed guide](https://github.com/maxmalkin/zed/blob/latex-preview/LATEX-BUILD.md)
 
----
+## What changes
 
-### Installation
+| Area | This fork |
+| --- | --- |
+| Markdown | Inline `$...$` and display `$$...$$` math in the native preview. |
+| Jupyter | Math in Markdown cells and kernel `text/latex` output, using the same renderer. |
+| TeX documents | A split preview with rebuild-on-save, page navigation, and zoom. |
+| Packages | Real TeX package imports and local `.sty` files on all three surfaces. |
+| Appearance | Correct alpha blending, high-resolution equations, and configurable TeX styling. |
+| Configuration | Read-only inheritance from official Zed; custom settings and keybindings take precedence. |
+| Multiplayer | Calls, channels, contacts UI, project sharing, and following are disabled; WebRTC transport is excluded. |
+| Remote development | A matching Linux x86_64 server is bundled for WSL and Linux SSH hosts. |
 
-On macOS, Linux, and Windows you can [download Zed directly](https://zed.dev/download) or install Zed via your local package manager ([macOS](https://zed.dev/docs/installation#macos)/[Linux](https://zed.dev/docs/linux#installing-via-a-package-manager)/[Windows](https://zed.dev/docs/windows#package-managers)).
+Rendering uses **Tectonic** for TeX compilation and **Hayro** for PDF rasterization. Equations sharing a preamble compile in batches; unchanged results are cached. This requires a custom editor build because Zed's extension API cannot register these native preview views.
 
-Other platforms are not yet available:
+## Install on Windows
 
-- Web ([tracking discussion](https://github.com/zed-industries/zed/discussions/26195))
+1. Download `Zed-LaTeX-Windows-x64.zip` from the [latest release](https://github.com/maxmalkin/zed/releases/latest).
+2. Extract the entire archive into `%LOCALAPPDATA%\Programs\Zed-LaTeX`.
+3. Run `zed-latex.exe`. Keep `cli.exe`, `tectonic.exe`, the DLLs, and `remote_servers` alongside it.
 
-### Developing Zed
+This is an unsigned personal build. It uses separate configuration and data directories and can run alongside official Zed. The first equation render downloads Tectonic's package/font bundle; later renders reuse that cache.
 
-- [Building Zed for macOS](./docs/src/development/macos.md)
-- [Building Zed for Linux](./docs/src/development/linux.md)
-- [Building Zed for Windows](./docs/src/development/windows.md)
+The implementation lives on **[`latex-preview`](https://github.com/maxmalkin/zed/tree/latex-preview)**. The default `main` branch hosts the repository overview and scheduled automation.
 
-### Contributing
+## Use the previews
 
-See [CONTRIBUTING.md](./CONTRIBUTING.md) for ways you can contribute to Zed.
+For Markdown, open a `.md` file and press **Ctrl+Shift+V**, or **Ctrl+K V** for a preview to the side. For a saved `.tex` file in a trusted local project, run **latex: open preview** from the command palette.
 
-Also... we're hiring! Check out our [jobs](https://zed.dev/jobs) page for open roles.
+Markdown and Jupyter share a preamble in the custom profile's settings. For example:
 
-### Licensing
+```json
+{
+  "latex": {
+    "preamble": "\\usepackage{amsmath,amssymb,mathtools}\n\\newcommand{\\RR}{\\mathbb{R}}\n\\boldmath"
+  }
+}
+```
 
-Zed source code is licensed primarily under GPL-3.0-or-later, with Apache-2.0 components where marked.
+`\boldmath` gives math heavier strokes; omit it for regular TeX weight. The preamble replaces the default imports, so retain `amsmath,amssymb` if needed. To import your own `.sty` files, also set `latex.package_directory` to an **existing absolute Windows directory** and add the corresponding `\usepackage` to the preamble.
 
-License information for third party dependencies must be correctly provided for CI to pass.
+TeX documents use their own preambles and resolve local packages relative to the document. The `examples` folder in each release includes Markdown, notebook, TeX, and local-package examples.
 
-We use [`cargo-about`](https://github.com/EmbarkStudios/cargo-about) to automatically comply with open source licenses. If CI is failing, check the following:
+## Keep your settings
 
-- Is it showing a `no license specified` error for a crate you've created? If so, add `publish = false` under `[package]` in your crate's Cargo.toml.
-- Is the error `failed to satisfy license requirements` for a dependency? If so, first determine what license the project has and whether this system is sufficient to comply with this license's requirements. If you're unsure, ask a lawyer. Once you've verified that this system is acceptable add the license's SPDX identifier to the `accepted` array in `script/licenses/zed-licenses.toml`.
-- Is `cargo-about` unable to find the license for a dependency? If so, add a clarification field at the end of `script/licenses/zed-licenses.toml`, as specified in the [cargo-about book](https://embarkstudios.github.io/cargo-about/cli/generate/config.html#crate-configuration).
+Official Windows settings are read from `%APPDATA%\Zed`. Overrides are written to `%APPDATA%\Zed-LaTeX`; the official files are left untouched. Settings and keybindings reload when changed. User theme and snippet directories are inherited too. An explicit `--user-data-dir` creates an isolated profile.
 
-## Sponsorship
+Extensions retain separate installation directories. Install any theme or language extensions required by your configuration in the custom profile as well.
 
-Zed is developed by **Zed Industries, Inc.**, a for-profit company.
+## Update without losing the custom features
 
-If you’d like to financially support the project, you can do so via GitHub Sponsors.
-Sponsorships go directly to Zed Industries and are used as general company revenue.
-There are no perks or entitlements associated with sponsorship.
+Close Zed LaTeX, then run:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\Programs\Zed-LaTeX\Update-Zed-LaTeX.ps1"
+```
+
+Add `-CheckOnly` to check without installing. The updater downloads this fork's release, verifies its checksum, and replaces the complete application/server bundle. One previous version is retained in `Zed-LaTeX.previous` for rollback.
+
+A daily workflow checks official stable releases and prepares integration PRs. Conflicts stop for manual resolution. Successful builds of the custom branch publish new releases; candidate branches do not. Updates are explicitly installed with the script above, and do not use official Zed binaries.
+
+## Current limits
+
+- `.tex` compilation currently supports **local projects**. SSH/WSL editing works, but remote-host TeX compilation is not implemented.
+- Tectonic uses XeTeX and its package bundle. Packages requiring another engine or external shell commands are not supported.
+- Included-file changes require **Rebuild** in the `.tex` preview. SyncTeX and PDF text selection are not implemented.
+- Real TeX has startup costs. First-use downloads and errors requiring individual equation retries take longer than warm batched renders.
+
+See the [build and validation guide](https://github.com/maxmalkin/zed/blob/latex-preview/LATEX-BUILD.md) for configuration details, measured performance, resource limits, and regression tests.
+
+## Source and credits
+
+```sh
+git clone --branch latex-preview https://github.com/maxmalkin/zed.git
+```
+
+Zed is developed by Zed Industries and its contributors. This personal fork is not an official Zed release. The [original upstream README](README.upstream.md) is preserved for reference.
+
+Source licensing remains primarily [GPL-3.0-or-later](LICENSE-GPL), with [Apache-2.0](LICENSE-APACHE) components where marked. See individual component notices for details.
