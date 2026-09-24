@@ -13,8 +13,7 @@ SSH password helper, and `tectonic.exe` provides compilation.
 
 This is a portable, unsigned development build. It uses separate `Zed-LaTeX`
 configuration and data directories and does not replace the official install.
-Updates come from custom GitHub Releases, not the official updater. Copy any
-wanted settings/extensions into the new profile through Zed's normal UI.
+Updates come from custom GitHub Releases, not the official updater. Official Zed configuration is inherited read-only; custom settings override it.
 
 The workflow builds a matching Linux x86_64 remote server for WSL and Linux SSH
 hosts. Other remote platforms require `remote_server` built from the exact same
@@ -54,8 +53,10 @@ Equations compile asynchronously and show source while loading. Hover a failed
 equation to see its compiler error. The first run
 needs internet access for Tectonic's TeX package/font bundle; subsequent runs
 reuse its cache. Markdown math is rendered through real TeX, not a restricted
-JavaScript equation language. Large notebooks will compile more slowly than a
-KaTeX renderer; compilation is serialized to bound memory.
+JavaScript equation language. Equations sharing a preamble compile in batches of up to 32, with cached images
+reused until source or appearance changes. Compilation is serialized to bound
+memory. A failed batch retries equations separately so one invalid equation does
+not hide its neighbors. Real TeX still has startup costs, especially on first use.
 
 ## TeX documents
 
@@ -74,7 +75,7 @@ PDF text selection yet. Examples are included in `examples/`.
 Tectonic uses XeTeX and its package bundle. Packages requiring another engine or
 external shell commands (for example shell-escape-based minted workflows) are
 not supported. Compilation disables shell escape, times out after three minutes,
-and limits PDF/raster size. This is not a complete sandbox for hostile TeX.
+and limits PDF/raster size (100 MB PDF, 64 MiB document page, 4 MiB equation image). This is not a complete sandbox for hostile TeX.
 
 ## Multiplayer removal
 
@@ -135,3 +136,49 @@ it before replacement, and keeps one previous bundle in `Zed-LaTeX.previous`.
 It does not touch official Zed or either application's settings. To roll back,
 close the custom editor and rename the current and previous bundle folders.
 Updates are explicitly run; no background scheduled task is installed.
+
+## Official configuration inheritance
+
+Without `--user-data-dir`, Zed LaTeX reads the official Zed configuration as a
+base layer and watches it for changes. On Windows this is `%APPDATA%\Zed`;
+its own overrides remain in `%APPDATA%\Zed-LaTeX`. Settings (including nested
+language settings and profiles) merge with custom values taking precedence.
+Keybindings are loaded official-first, custom-last. Tasks/debug arrays are
+inherited when absent and replaced by an explicit custom array. Custom themes
+load after official user themes; snippet directories are both watched.
+
+The official files are never written by inheritance. Editing settings through
+Zed LaTeX edits its own overrides. `--user-data-dir` remains an isolated profile.
+Extensions have separate installation directories; missing extensions were
+imported from the official installation on this machine, without replacing
+existing custom extensions. Future extension installations remain independent.
+
+## Performance checks
+
+Run `cargo test -p latex_renderer -- --include-ignored --test-threads=1 --nocapture`
+with Tectonic on PATH. This includes actual package rendering, multi-page equation
+batching, bad-equation isolation, alpha conversion, and an eight-equation timing
+comparison. Raster images use straight alpha for GPUI and equations use 3 raster
+pixels per logical pixel; this corrects faint edges without changing math style.
+PDF previews retain the parsed document, coalesce page/zoom requests, and release
+GPU images when closed. Compiler output is bounded and only its error tail is
+read into memory. No unbounded global equation cache or extra compiler pool is
+introduced.
+
+Measured on this machine with a warm Tectonic cache (eight equations):
+
+| Check | Separate compilations | Batched |
+| --- | --- | --- |
+| Native Windows TeX compilation | 4.717 s | 0.595 s |
+| Linux compiler plus rasterizer, debug test build | 4.313 s | 0.917 s |
+
+The eight high-resolution images occupy 864,800 bytes before GPU upload. A
+separate `/usr/bin/time -v` run of the renderer benchmark reported maximum RSS
+188,416 KiB; this is a compiler/renderer test measurement, not total editor or
+GPU memory. Timings depend on packages, document complexity, and hardware.
+
+The review also covered Jupyter MIME routing, multiplayer removal, CLI/remote
+bundle selection, and the release updater. Those additions introduce no new
+continuous rendering or polling loops; no speculative rewrite was made there.
+The updated Windows GUI's sustained memory usage still needs measurement after
+its native build completes.

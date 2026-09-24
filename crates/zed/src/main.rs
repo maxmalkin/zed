@@ -1843,38 +1843,54 @@ fn load_user_themes_in_background(fs: Arc<dyn fs::Fs>, cx: &mut App) {
         let fs = fs.clone();
         async move |cx| {
             let theme_registry = cx.update(|cx| ThemeRegistry::global(cx));
-            let themes_dir = paths::themes_dir().as_ref();
-            match fs
-                .metadata(themes_dir)
-                .await
-                .ok()
-                .flatten()
-                .map(|m| m.is_dir)
-            {
-                Some(is_dir) => {
-                    anyhow::ensure!(is_dir, "Themes dir path {themes_dir:?} is not a directory")
-                }
-                None => {
-                    fs.create_dir(themes_dir).await.with_context(|| {
-                        format!("Failed to create themes dir at path {themes_dir:?}")
-                    })?;
-                }
-            }
-
-            let mut theme_paths = fs
-                .read_dir(themes_dir)
-                .await
-                .with_context(|| format!("reading themes from {themes_dir:?}"))?;
-
-            while let Some(theme_path) = theme_paths.next().await {
-                let Some(theme_path) = theme_path.log_err() else {
+            let mut directories: Vec<_> = paths::official_config_dir()
+                .map(|dir| dir.join("themes"))
+                .into_iter()
+                .collect();
+            directories.push(paths::themes_dir().clone());
+            for themes_dir in &directories {
+                if themes_dir != paths::themes_dir()
+                    && !fs
+                        .metadata(themes_dir)
+                        .await
+                        .ok()
+                        .flatten()
+                        .is_some_and(|m| m.is_dir)
+                {
                     continue;
-                };
-                let Some(bytes) = fs.load_bytes(&theme_path).await.log_err() else {
-                    continue;
-                };
+                }
+                match fs
+                    .metadata(themes_dir)
+                    .await
+                    .ok()
+                    .flatten()
+                    .map(|m| m.is_dir)
+                {
+                    Some(is_dir) => {
+                        anyhow::ensure!(is_dir, "Themes dir path {themes_dir:?} is not a directory")
+                    }
+                    None => {
+                        fs.create_dir(themes_dir).await.with_context(|| {
+                            format!("Failed to create themes dir at path {themes_dir:?}")
+                        })?;
+                    }
+                }
 
-                load_user_theme(&theme_registry, &bytes).log_err();
+                let mut theme_paths = fs
+                    .read_dir(themes_dir)
+                    .await
+                    .with_context(|| format!("reading themes from {themes_dir:?}"))?;
+
+                while let Some(theme_path) = theme_paths.next().await {
+                    let Some(theme_path) = theme_path.log_err() else {
+                        continue;
+                    };
+                    let Some(bytes) = fs.load_bytes(&theme_path).await.log_err() else {
+                        continue;
+                    };
+
+                    load_user_theme(&theme_registry, &bytes).log_err();
+                }
             }
 
             cx.update(theme_settings::reload_theme);
@@ -1888,27 +1904,24 @@ fn load_user_themes_in_background(fs: Arc<dyn fs::Fs>, cx: &mut App) {
 fn watch_themes(fs: Arc<dyn fs::Fs>, cx: &mut App) {
     use std::time::Duration;
     cx.spawn(async move |cx| {
-        let (mut events, _) = fs
-            .watch(paths::themes_dir(), Duration::from_millis(100))
-            .await;
-
-        while let Some(paths) = events.next().await {
-            for event in paths {
-                if fs
-                    .metadata(&event.path)
-                    .await
-                    .ok()
-                    .flatten()
-                    .is_some_and(|m| !m.is_dir)
-                {
-                    let theme_registry = cx.update(|cx| ThemeRegistry::global(cx));
-                    if let Some(bytes) = fs.load_bytes(&event.path).await.log_err()
-                        && load_user_theme(&theme_registry, &bytes).log_err().is_some()
-                    {
-                        cx.update(theme_settings::reload_theme);
-                    }
-                }
-            }
+        let mut directories: Vec<_> = paths::official_config_dir()
+            .map(|dir| dir.join("themes"))
+            .into_iter()
+            .collect();
+        directories.push(paths::themes_dir().clone());
+        let mut streams = Vec::new();
+        let mut watchers = Vec::new();
+        for directory in directories {
+            let (events, watcher) = fs.watch(&directory, Duration::from_millis(100)).await;
+            streams.push(events);
+            watchers.push(watcher);
+        }
+        let _watchers = watchers;
+        let mut events = futures::stream::select_all(streams);
+        while events.next().await.is_some() {
+            // Reload in precedence order so editing an inherited theme cannot
+            // overwrite a custom theme with the same name.
+            cx.update(|cx| load_user_themes_in_background(fs.clone(), cx));
         }
     })
     .detach()

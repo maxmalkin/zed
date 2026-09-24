@@ -68,13 +68,15 @@ struct LatexPreview {
     buffer: Entity<Buffer>,
     project: Entity<Project>,
     focus: FocusHandle,
-    pdf: Option<Arc<Vec<u8>>>,
+    pdf: Option<Arc<latex_renderer::PdfDocument>>,
     image: Option<Arc<RenderImage>>,
     page: usize,
     page_count: usize,
     zoom: f32,
     message: SharedString,
     compiling: bool,
+    rendering: bool,
+    render_again: bool,
     compile_again: bool,
     cancelled: Arc<AtomicBool>,
     _compile: Task<()>,
@@ -89,6 +91,12 @@ impl LatexPreview {
         project: Entity<Project>,
         cx: &mut Context<Self>,
     ) -> Self {
+        cx.on_release(|this, cx| {
+            if let Some(image) = this.image.take() {
+                cx.drop_image(image, None);
+            }
+        })
+        .detach();
         let subscription = cx.subscribe(&buffer, |this, _, event, cx| {
             if matches!(event, BufferEvent::Saved) {
                 this.compile(cx);
@@ -106,6 +114,8 @@ impl LatexPreview {
             zoom: 1.0,
             message: "".into(),
             compiling: false,
+            rendering: false,
+            render_again: false,
             compile_again: false,
             cancelled: Arc::new(AtomicBool::new(false)),
             _compile: Task::ready(()),
@@ -166,7 +176,12 @@ impl LatexPreview {
     }
 
     fn render_page(&mut self, cx: &mut Context<Self>) {
+        if self.rendering {
+            self.render_again = true;
+            return;
+        }
         let Some(pdf) = self.pdf.clone() else { return };
+        self.rendering = true;
         let page = self.page;
         let zoom = self.zoom;
         let task =
@@ -174,8 +189,16 @@ impl LatexPreview {
         self._render = cx.spawn(async move |this, cx| {
             let result = task.await;
             this.update(cx, |this, cx| {
+                this.rendering = false;
+                if std::mem::take(&mut this.render_again) {
+                    this.render_page(cx);
+                    return;
+                }
                 match result {
                     Ok(rendered) => {
+                        if !this.compiling {
+                            this.message = "".into();
+                        }
                         let buffer = image::RgbaImage::from_raw(
                             rendered.width,
                             rendered.height,

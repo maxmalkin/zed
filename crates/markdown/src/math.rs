@@ -52,55 +52,28 @@ struct MathImage {
 
 struct CachedMath {
     result: Arc<OnceLock<anyhow::Result<MathImage>>>,
-    _task: Task<()>,
-    cancelled: Arc<AtomicBool>,
+    batch: Option<Arc<MathBatch>>,
 }
 
 #[derive(Default)]
 pub(crate) struct MathState(HashMap<MathKey, CachedMath>);
 
 impl MathState {
-    pub(crate) fn render(&mut self, key: MathKey, cx: &mut Context<Markdown>) -> AnyElement {
+    pub(crate) fn clear(&mut self, cx: &mut gpui::App) {
+        for cached in self.0.values() {
+            if let Some(Ok(rendered)) = cached.result.get() {
+                cx.drop_image(rendered.image.clone(), None);
+            }
+        }
+        self.0.clear();
+    }
+
+    pub(crate) fn render(&mut self, key: MathKey, _cx: &mut Context<Markdown>) -> AnyElement {
         let cached = self.0.entry(key.clone()).or_insert_with(|| {
             let result = Arc::new(OnceLock::new());
-            let output = result.clone();
-            let cancelled = Arc::new(AtomicBool::new(false));
-            let cancellation = cancelled.clone();
-            let key = key.clone();
-            let task = cx.spawn(async move |markdown, cx| {
-                cx.background_executor()
-                    .timer(std::time::Duration::from_millis(200))
-                    .await;
-                let [r, g, b, _] = key.color.map(f32::from_bits);
-                let rendered = latex_renderer::render_math(
-                    key.latex.to_string(),
-                    key.preamble.to_string(),
-                    key.package_directory,
-                    key.display,
-                    f32::from_bits(key.font_size),
-                    [r, g, b].map(|c| (c.clamp(0.0, 1.0) * 255.0).round() as u8),
-                    cancellation,
-                )
-                .await
-                .and_then(|rendered| {
-                    let buffer =
-                        image::RgbaImage::from_raw(rendered.width, rendered.height, rendered.bgra)
-                            .ok_or_else(|| anyhow::anyhow!("Invalid equation raster"))?;
-                    Ok(MathImage {
-                        image: Arc::new(RenderImage::new(smallvec::smallvec![image::Frame::new(
-                            buffer
-                        )])),
-                        width: rendered.width as f32 / 1.5,
-                        height: rendered.height as f32 / 1.5,
-                    })
-                });
-                output.set(rendered).ok();
-                markdown.update(cx, |_, cx| cx.notify()).ok();
-            });
             CachedMath {
                 result,
-                _task: task,
-                cancelled,
+                batch: None,
             }
         });
         match cached.result.get() {
@@ -137,10 +110,84 @@ impl MathState {
             }
             false
         });
+        let mut groups: HashMap<(SharedString, Option<PathBuf>), Vec<MathKey>> = HashMap::default();
+        for (key, cached) in &self.0 {
+            if cached.batch.is_none() {
+                groups
+                    .entry((key.preamble.clone(), key.package_directory.clone()))
+                    .or_default()
+                    .push(key.clone());
+            }
+        }
+        for ((preamble, directory), keys) in groups {
+            // ponytail: cap batches at 32 equations to bound PDF/raster memory.
+            for keys in keys.chunks(32) {
+                let outputs: Vec<_> = keys.iter().map(|key| self.0[key].result.clone()).collect();
+                let equations = keys
+                    .iter()
+                    .map(|key| {
+                        let [r, g, b, _] = key.color.map(f32::from_bits);
+                        latex_renderer::MathEquation {
+                            latex: key.latex.to_string(),
+                            display: key.display,
+                            font_size: f32::from_bits(key.font_size),
+                            color: [r, g, b].map(|c| (c.clamp(0.0, 1.0) * 255.0).round() as u8),
+                        }
+                    })
+                    .collect();
+                let cancelled = Arc::new(AtomicBool::new(false));
+                let cancellation = cancelled.clone();
+                let preamble = preamble.to_string();
+                let directory = directory.clone();
+                let task = cx.spawn(async move |markdown, cx| {
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_millis(75))
+                        .await;
+                    let results = latex_renderer::render_math_batch(
+                        equations,
+                        preamble,
+                        directory,
+                        cancellation,
+                    )
+                    .await;
+                    for (output, rendered) in outputs.into_iter().zip(results) {
+                        let rendered = rendered.and_then(|rendered| {
+                            let buffer = image::RgbaImage::from_raw(
+                                rendered.width,
+                                rendered.height,
+                                rendered.bgra,
+                            )
+                            .ok_or_else(|| anyhow::anyhow!("Invalid equation raster"))?;
+                            Ok(MathImage {
+                                image: Arc::new(RenderImage::new(smallvec::smallvec![
+                                    image::Frame::new(buffer)
+                                ])),
+                                width: rendered.width as f32 / latex_renderer::MATH_RASTER_SCALE,
+                                height: rendered.height as f32 / latex_renderer::MATH_RASTER_SCALE,
+                            })
+                        });
+                        output.set(rendered).ok();
+                    }
+                    markdown.update(cx, |_, cx| cx.notify()).ok();
+                });
+                let batch = Arc::new(MathBatch {
+                    _task: task,
+                    cancelled,
+                });
+                for key in keys {
+                    self.0.get_mut(key).unwrap().batch = Some(batch.clone());
+                }
+            }
+        }
     }
 }
 
-impl Drop for CachedMath {
+struct MathBatch {
+    _task: Task<()>,
+    cancelled: Arc<AtomicBool>,
+}
+
+impl Drop for MathBatch {
     fn drop(&mut self) {
         self.cancelled.store(true, Ordering::Relaxed);
     }

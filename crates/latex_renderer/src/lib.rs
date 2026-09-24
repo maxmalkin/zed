@@ -1,6 +1,7 @@
 use anyhow::{Context as _, Result, anyhow, ensure};
 use std::{
     fs,
+    io::{Read, Seek, SeekFrom},
     path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::{
@@ -13,6 +14,8 @@ use std::{
 // ponytail: serialize compiler processes to bound memory; add a small worker pool if needed.
 static COMPILER: LazyLock<smol::lock::Semaphore> = LazyLock::new(|| smol::lock::Semaphore::new(1));
 
+pub use hayro::hayro_syntax::Pdf as PdfDocument;
+
 pub struct RenderedPage {
     pub bgra: Vec<u8>,
     pub width: u32,
@@ -21,9 +24,25 @@ pub struct RenderedPage {
     pub count: usize,
 }
 
-pub async fn compile_document(path: PathBuf, cancelled: Arc<AtomicBool>) -> Result<Vec<u8>> {
+pub async fn compile_document(path: PathBuf, cancelled: Arc<AtomicBool>) -> Result<PdfDocument> {
+    ensure!(!cancelled.load(Ordering::Relaxed), "Rendering cancelled");
     let _permit = COMPILER.acquire().await;
-    smol::unblock(move || compile_tex(&path, &cancelled)).await
+    smol::unblock(move || {
+        let bytes = compile_tex(&path, &cancelled)?;
+        PdfDocument::new(Arc::new(bytes)).map_err(|e| anyhow!("Could not read PDF: {e:?}"))
+    })
+    .await
+}
+
+/// Raster pixels per logical pixel in Markdown/Jupyter equations.
+pub const MATH_RASTER_SCALE: f32 = 3.0;
+
+#[derive(Clone)]
+pub struct MathEquation {
+    pub latex: String,
+    pub display: bool,
+    pub font_size: f32,
+    pub color: [u8; 3],
 }
 
 pub async fn render_math(
@@ -35,43 +54,120 @@ pub async fn render_math(
     color: [u8; 3],
     cancelled: Arc<AtomicBool>,
 ) -> Result<RenderedPage> {
+    let equation = MathEquation {
+        latex,
+        display,
+        font_size,
+        color,
+    };
+    Ok(
+        compile_math(vec![equation], preamble, package_directory, cancelled)
+            .await?
+            .remove(0),
+    )
+}
+
+/// Compile equations sharing a preamble together, keeping one bad equation from
+/// preventing its neighbors from rendering.
+pub async fn render_math_batch(
+    equations: Vec<MathEquation>,
+    preamble: String,
+    package_directory: Option<PathBuf>,
+    cancelled: Arc<AtomicBool>,
+) -> Vec<Result<RenderedPage>> {
+    if equations.is_empty() {
+        return Vec::new();
+    }
+    match compile_math(
+        equations.clone(),
+        preamble.clone(),
+        package_directory.clone(),
+        cancelled.clone(),
+    )
+    .await
+    {
+        Ok(pages) => pages.into_iter().map(Ok).collect(),
+        Err(error) if equations.len() == 1 || cancelled.load(Ordering::Relaxed) => equations
+            .iter()
+            .map(|_| Err(anyhow!("{error:#}")))
+            .collect(),
+        Err(_) => {
+            let mut results = Vec::with_capacity(equations.len());
+            for equation in equations {
+                results.push(
+                    render_math(
+                        equation.latex,
+                        preamble.clone(),
+                        package_directory.clone(),
+                        equation.display,
+                        equation.font_size,
+                        equation.color,
+                        cancelled.clone(),
+                    )
+                    .await,
+                );
+            }
+            results
+        }
+    }
+}
+
+async fn compile_math(
+    equations: Vec<MathEquation>,
+    preamble: String,
+    package_directory: Option<PathBuf>,
+    cancelled: Arc<AtomicBool>,
+) -> Result<Vec<RenderedPage>> {
+    ensure!(!cancelled.load(Ordering::Relaxed), "Rendering cancelled");
     let _permit = COMPILER.acquire().await;
     smol::unblock(move || {
         ensure!(!cancelled.load(Ordering::Relaxed), "Rendering cancelled");
         ensure!(
-            latex.len() + preamble.len() <= 262144,
-            "Equation or preamble is too large"
+            preamble.len() + equations.iter().map(|e| e.latex.len()).sum::<usize>() <= 262144,
+            "Equations or preamble are too large"
         );
         let temporary = tempfile::tempdir()?;
         let path = temporary.path().join("equation.tex");
-        let document = math_document(&latex, &preamble, display, font_size, color);
-        fs::write(&path, document)?;
-        let pdf = compile_tex_in(&path, &cancelled, package_directory.as_deref())?;
-        let rendered = render_pdf_page(Arc::new(pdf), 0, 1.0)?;
+        fs::write(&path, math_document(&equations, &preamble))?;
+        let bytes = compile_tex_in(&path, &cancelled, package_directory.as_deref())?;
+        let pdf = hayro::hayro_syntax::Pdf::new(Arc::new(bytes))
+            .map_err(|e| anyhow!("Could not read PDF: {e:?}"))?;
         ensure!(
-            rendered.count == 1,
-            "An equation must produce exactly one page"
+            pdf.pages().len() == equations.len(),
+            "Each equation must produce exactly one page"
         );
-        Ok(rendered)
+        (0..equations.len())
+            .map(|page| {
+                ensure!(!cancelled.load(Ordering::Relaxed), "Rendering cancelled");
+                raster_page(&pdf, page, MATH_RASTER_SCALE / 1.5, 4 * 1024 * 1024)
+            })
+            .collect()
     })
     .await
 }
 
-fn math_document(
-    latex: &str,
-    preamble: &str,
-    display: bool,
-    font_size: f32,
-    [r, g, b]: [u8; 3],
-) -> String {
-    let style = if display {
-        r"\displaystyle "
-    } else {
-        r"\textstyle "
-    };
-    format!(
-        "\\documentclass[border=2pt]{{standalone}}\n\\usepackage{{xcolor}}\n{preamble}\n\\begin{{document}}\n\\fontsize{{{font_size}}}{{{font_size}}}\\selectfont\n\\color[RGB]{{{r},{g},{b}}}\n${style}{latex}$\n\\end{{document}}\n"
-    )
+fn math_document(equations: &[MathEquation], preamble: &str) -> String {
+    let mut document = format!(
+        "\\documentclass[border=2pt,multi=preview]{{standalone}}\n\\usepackage{{xcolor}}\n{preamble}\n\\begin{{document}}\n"
+    );
+    for equation in equations {
+        let style = if equation.display {
+            r"\displaystyle "
+        } else {
+            r"\textstyle "
+        };
+        let MathEquation {
+            latex,
+            font_size,
+            color: [r, g, b],
+            ..
+        } = equation;
+        document.push_str(&format!(
+            "\\begin{{preview}}\\begingroup\n\\fontsize{{{font_size}}}{{{font_size}}}\\selectfont\n\\color[RGB]{{{r},{g},{b}}}\n${style}{latex}$\n\\endgroup\\end{{preview}}\n"
+        ));
+    }
+    document.push_str("\\end{document}\n");
+    document
 }
 
 fn compile_tex(path: &Path, cancelled: &AtomicBool) -> Result<Vec<u8>> {
@@ -105,7 +201,7 @@ fn compile_tex_in(
     };
     let mut command = Command::new(executable);
     command
-        .args(["--untrusted", "--keep-logs", "--outdir"])
+        .args(["--untrusted", "--outdir"])
         .arg(output.path())
         .arg(if directory.is_some() {
             Path::new("-")
@@ -139,21 +235,29 @@ fn compile_tex_in(
             let _ = child.wait();
             anyhow::bail!("LaTeX compilation cancelled or exceeded three minutes");
         }
-        if let Some(status) = child.try_wait()? {
-            break status;
+        if fs::metadata(&log_path).is_ok_and(|metadata| metadata.len() > 8 * 1024 * 1024) {
+            let _ = child.kill();
+            let _ = child.wait();
+            anyhow::bail!("LaTeX compiler output exceeded 8 MB");
+        }
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {}
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(error).context("Could not wait for LaTeX compiler");
+            }
         }
         std::thread::sleep(Duration::from_millis(100));
     };
     if !status.success() {
-        let log = fs::read_to_string(log_path).unwrap_or_default();
-        let tail: String = log
-            .chars()
-            .rev()
-            .take(8000)
-            .collect::<String>()
-            .chars()
-            .rev()
-            .collect();
+        let mut log = fs::File::open(log_path)?;
+        let offset = log.metadata()?.len().saturating_sub(8000);
+        log.seek(SeekFrom::Start(offset))?;
+        let mut tail = Vec::new();
+        log.read_to_end(&mut tail)?;
+        let tail = String::from_utf8_lossy(&tail);
         anyhow::bail!("LaTeX compilation failed:\n{tail}");
     }
     let pdf = if directory.is_some() {
@@ -171,10 +275,16 @@ fn compile_tex_in(
     fs::read(pdf).context("Compiler did not produce a readable PDF")
 }
 
-pub fn render_pdf_page(bytes: Arc<Vec<u8>>, page: usize, zoom: f32) -> Result<RenderedPage> {
-    // ponytail: reparse on page/zoom changes; cache the parsed document if navigation becomes slow.
-    let pdf =
-        hayro::hayro_syntax::Pdf::new(bytes).map_err(|e| anyhow!("Could not read PDF: {e:?}"))?;
+pub fn render_pdf_page(pdf: Arc<PdfDocument>, page: usize, zoom: f32) -> Result<RenderedPage> {
+    raster_page(&pdf, page, zoom, 64 * 1024 * 1024)
+}
+
+fn raster_page(
+    pdf: &hayro::hayro_syntax::Pdf,
+    page: usize,
+    zoom: f32,
+    max_bytes: usize,
+) -> Result<RenderedPage> {
     let pages = pdf.pages();
     ensure!(!pages.is_empty(), "PDF contains no pages");
     let page_index = page.min(pages.len() - 1);
@@ -189,7 +299,8 @@ pub fn render_pdf_page(bytes: Arc<Vec<u8>>, page: usize, zoom: f32) -> Result<Re
             && width > 0.0
             && height > 0.0
             && width * scale <= 8192.0
-            && height * scale <= 8192.0,
+            && height * scale <= 8192.0
+            && (width * scale).ceil() * (height * scale).ceil() * 4.0 <= max_bytes as f32,
         "Page is too large to preview at this zoom"
     );
     let pixmap = hayro::render(
@@ -205,7 +316,7 @@ pub fn render_pdf_page(bytes: Arc<Vec<u8>>, page: usize, zoom: f32) -> Result<Re
     let pixels = pixmap
         .data()
         .iter()
-        .flat_map(|p| [p.b, p.g, p.r, p.a])
+        .flat_map(|p| straight_bgra([p.r, p.g, p.b, p.a]))
         .collect();
     Ok(RenderedPage {
         bgra: pixels,
@@ -216,9 +327,93 @@ pub fn render_pdf_page(bytes: Arc<Vec<u8>>, page: usize, zoom: f32) -> Result<Re
     })
 }
 
+// Hayro emits premultiplied RGBA; GPUI's image shader expects straight BGRA.
+// Feeding premultiplied colors to it applies alpha twice and thins glyph edges.
+fn straight_bgra([r, g, b, a]: [u8; 4]) -> [u8; 4] {
+    let straight = |c: u8| {
+        if a == 0 {
+            0
+        } else {
+            ((u32::from(c) * 255 + u32::from(a) / 2) / u32::from(a)).min(255) as u8
+        }
+    };
+    [straight(b), straight(g), straight(r), a]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "requires Tectonic; reports warm-cache rendering time"]
+    fn measure_equation_batch() -> Result<()> {
+        smol::block_on(async {
+            let equations: Vec<_> = (0..8)
+                .map(|i| MathEquation {
+                    latex: format!(r"\frac{{{i}+1}}{{2}}+\mathbb{{R}}"),
+                    display: true,
+                    font_size: 16.0,
+                    color: [230; 3],
+                })
+                .collect();
+            let preamble = r"\usepackage{amsmath,amssymb}";
+            let cancelled = Arc::new(AtomicBool::new(false));
+            compile_math(
+                vec![equations[0].clone()],
+                preamble.into(),
+                None,
+                cancelled.clone(),
+            )
+            .await?;
+            let start = Instant::now();
+            let mut sizes = Vec::new();
+            for equation in &equations {
+                let page = render_math(
+                    equation.latex.clone(),
+                    preamble.into(),
+                    None,
+                    equation.display,
+                    equation.font_size,
+                    equation.color,
+                    cancelled.clone(),
+                )
+                .await?;
+                sizes.push((page.width, page.height));
+            }
+            let serial = start.elapsed();
+            let start = Instant::now();
+            let pages = compile_math(equations, preamble.into(), None, cancelled).await?;
+            let batch = start.elapsed();
+            assert_eq!(
+                pages
+                    .iter()
+                    .map(|page| (page.width, page.height))
+                    .collect::<Vec<_>>(),
+                sizes
+            );
+            eprintln!(
+                "8 equations: separate={serial:?}, batch={batch:?}, cached raster bytes={}",
+                pages.iter().map(|page| page.bgra.len()).sum::<usize>()
+            );
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn cancelled_documents_do_not_start_a_compiler() {
+        let result = smol::block_on(compile_document(
+            PathBuf::from("nonexistent.tex"),
+            Arc::new(AtomicBool::new(true)),
+        ));
+        assert!(result.err().unwrap().to_string().contains("cancelled"));
+    }
+
+    #[test]
+    fn raster_colors_apply_alpha_once() {
+        assert_eq!(straight_bgra([64, 32, 16, 128]), [32, 64, 128, 128]);
+        assert_eq!(straight_bgra([255, 255, 255, 255]), [255, 255, 255, 255]);
+        assert_eq!(straight_bgra([0, 0, 0, 0]), [0, 0, 0, 0]);
+    }
 
     #[test]
     #[ignore = "requires Tectonic on PATH and access to its package bundle"]
@@ -245,6 +440,7 @@ mod tests {
                 page.bgra.len(),
                 page.width as usize * page.height as usize * 4
             );
+            assert!(raster_page(&pdf, 0, 0.5, 1).is_err());
             assert!(render_pdf_page(pdf, 0, 0.0).is_err());
             for display in [false, true] {
                 let equation = render_math(
@@ -267,6 +463,47 @@ mod tests {
                 );
                 assert!(equation.bgra.chunks_exact(4).any(|p| p[3] == 0));
             }
+            let equations = vec![
+                MathEquation {
+                    latex: r"\localnumber".into(),
+                    display: false,
+                    font_size: 16.0,
+                    color: [255; 3],
+                },
+                MathEquation {
+                    latex: r"\frac{1}{2}+\localnumber".into(),
+                    display: true,
+                    font_size: 16.0,
+                    color: [255; 3],
+                },
+            ];
+            let batch = compile_math(
+                equations.clone(),
+                preamble.into(),
+                Some(directory.path().to_path_buf()),
+                cancelled.clone(),
+            )
+            .await?;
+            assert_eq!(batch.len(), 2);
+            assert_eq!(batch[0].count, 2);
+            assert!(batch[1].height > batch[0].height);
+            assert!(
+                batch[0]
+                    .bgra
+                    .chunks_exact(4)
+                    .any(|p| p[3] > 30 && p[3] < 220 && p[0] > 245)
+            );
+            let mut mixed = equations;
+            mixed[1].latex = r"\undefinedpreviewcommand".into();
+            let results = render_math_batch(
+                mixed,
+                preamble.into(),
+                Some(directory.path().to_path_buf()),
+                cancelled.clone(),
+            )
+            .await;
+            assert!(results[0].is_ok());
+            assert!(results[1].is_err());
             let invalid = render_math(
                 r"\undefinedpreviewcommand".into(),
                 preamble.into(),

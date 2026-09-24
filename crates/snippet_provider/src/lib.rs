@@ -158,7 +158,12 @@ impl GlobalSnippetWatcher {
             snippets: Default::default(),
             watch_tasks: vec![],
         });
-        provider.update(cx, |this, cx| this.watch_directory(global_snippets_dir, cx));
+        provider.update(cx, |this, cx| {
+            if let Some(official) = paths::official_config_dir() {
+                this.watch_directory(&official.join("snippets"), cx);
+            }
+            this.watch_directory(global_snippets_dir, cx);
+        });
         Self(provider)
     }
 }

@@ -140,6 +140,19 @@ pub fn config_dir() -> &'static PathBuf {
     })
 }
 
+/// Read-only configuration inherited from the official installation.
+/// Explicit --user-data-dir profiles remain isolated.
+pub fn official_config_dir() -> Option<PathBuf> {
+    if CUSTOM_DATA_DIR.get().is_some() {
+        return None;
+    }
+    Some(
+        config_dir()
+            .parent()?
+            .join(if cfg!(windows) { "Zed" } else { "zed" }),
+    )
+}
+
 /// Returns the path to the data directory used by Zed.
 pub fn data_dir() -> &'static PathBuf {
     CURRENT_DATA_DIR.get_or_init(|| {

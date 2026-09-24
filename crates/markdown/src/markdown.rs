@@ -666,6 +666,7 @@ impl Markdown {
         options: MarkdownOptions,
         cx: &mut Context<Self>,
     ) -> Self {
+        cx.on_release(|this, cx| this.math_state.clear(cx)).detach();
         let focus_handle = cx.focus_handle();
 
         let theme_subscription = if options.render_mermaid_diagrams {
